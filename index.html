@@ -137,6 +137,7 @@ td.n,th.n{text-align:right;white-space:nowrap}
 .count-input.changed{border-color:var(--copper);background:#FFF6EC}
 .setup{max-width:560px;margin:40px auto}
 .setup code{background:var(--tag);padding:2px 6px;border-radius:4px}
+a[data-pdf]{color:var(--copper-deep);font-weight:600}
 [hidden]{display:none!important}
 </style>
 </head>
@@ -153,8 +154,8 @@ td.n,th.n{text-align:right;white-space:nowrap}
 
 <nav class="tabs" aria-label="Sections">
   <button type="button" data-tab="stock" aria-current="page">Stock</button>
-  <button type="button" data-tab="out">Take out</button>
-  <button type="button" data-tab="in">Bring in</button>
+  <button type="button" data-tab="out">Outgoing</button>
+  <button type="button" data-tab="in">Received</button>
   <button type="button" data-tab="owner">Owner</button>
 </nav>
 
@@ -277,7 +278,7 @@ function stockView(app){
     $('#list').innerHTML=rows.length?rows.map(i=>`<button type="button" class="row" data-item="${esc(i.item)}">
       <div><div class="name">${esc(i.item)}</div><div class="meta">${esc(i.category)}</div></div>
       <div class="tag ${i.onHand<0?'neg':i.onHand===0?'zero':''}"><b>${fmtQty(i.onHand)}</b><span>${esc(i.uom)}</span></div></button>`).join('')
-      :`<div class="empty">No items match. Add new material from Bring in.</div>`;
+      :`<div class="empty">No items match. Add new material from Received.</div>`;
   };
   draw();
   $('#q').addEventListener('input',e=>{S.q=e.target.value;draw();});
@@ -297,7 +298,7 @@ function itemSheet(name){
   }
   openSheet(`<div class="sheet-head"><h2>${esc(it.item)}</h2><button class="btn ghost small" data-close>Close</button></div>
   <div class="stat"><div><b>${fmtQty(it.onHand)} ${esc(it.uom)}</b>On hand</div><div><b>${esc(it.category)}</b>Category</div></div>${cost}
-  <div style="display:flex;gap:10px;margin:6px 0 16px"><button class="btn" data-go="out">Take out</button><button class="btn patina" data-go="in">Bring in</button></div>
+  <div style="display:flex;gap:10px;margin:6px 0 16px"><button class="btn" data-go="out">Outgoing</button><button class="btn patina" data-go="in">Received</button></div>
   <h2>History</h2>${movesTable(moves)}`);
   $('#sheet').querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=>{closeSheet();S.prefill=it.item;S.tab=b.dataset.go;render();}));
 }
@@ -309,10 +310,10 @@ function movesTable(moves){
   <td>${esc(m.person)}</td><td>${esc(m.project||(m.ticket?'Ticket '+m.ticket:''))}</td><td>${esc(m.note)}</td></tr>`).join('')}</table></div>`;
 }
 const signed = m => { const v=m.type==='OUT'?-m.qty:m.qty; return (v>0?'+':v<0?'−':'')+fmtQty(Math.abs(v)); };
-const pill = t => t==='OUT'?'<span class="pill out">Out</span>':t==='IN'?'<span class="pill in">In</span>':'<span class="pill adj">Count</span>';
+const pill = t => t==='OUT'?'<span class="pill out">Outgoing</span>':t==='IN'?'<span class="pill in">Received</span>':'<span class="pill adj">Count</span>';
 
 function outView(app){
-  app.innerHTML=`<h1>Take out material</h1><p class="lead">Log what leaves the warehouse, who took it, and which job it's for.</p>
+  app.innerHTML=`<h1>Outgoing material</h1><p class="lead">Log what leaves the warehouse, who it went to, and which job it's for.</p>
   <form class="card" id="f" novalidate>
     <div class="field"><label for="oItem">Item</label><div id="cItem"></div><div class="onhand-note" id="oNote"></div></div>
     <div class="field"><label for="oQty">Quantity</label>${qtyField('oQty')}</div>
@@ -321,7 +322,7 @@ function outView(app){
       <div class="field"><label for="oProject">Project <span class="hint">leave blank for tools given to a person</span></label><div id="cProject"></div></div>
     </div>
     <div class="field"><label for="oNoteIn">Note <span class="hint">optional</span></label><input class="input" id="oNoteIn"></div>
-    <button class="btn full" id="go">Take out</button>
+    <button class="btn full" id="go">Save outgoing</button>
   </form>`;
   const note=$('#oNote');
   const refresh=()=>{ const it=itemByName(item.value); const q=Number($('#oQty').value)||0;
@@ -343,27 +344,27 @@ function outView(app){
     const btn=$('#go'); btn.disabled=true; btn.textContent='Saving…';
     try{
       const r=await api('stockOut',{item:it.item,qty:$('#oQty').value,person:pv,project:prv,note:$('#oNoteIn').value});
-      await load(); toast(`Taken out: ${fmtQty($('#oQty').value)} ${it.uom}. ${fmtQty(r.onHand)} left.`); outView(app);
-    }catch(err){ toast(err.message,1); btn.disabled=false; btn.textContent='Take out'; }
+      await load(); toast(`Outgoing saved: ${fmtQty($('#oQty').value)} ${it.uom}. ${fmtQty(r.onHand)} left.`); outView(app);
+    }catch(err){ toast(err.message,1); btn.disabled=false; btn.textContent='Save outgoing'; }
   });
 }
 
 function inView(app){
-  app.innerHTML=`<h1>Bring in material</h1><p class="lead">Log material coming into the warehouse. Northside tickets are added from the Owner tab.</p>
+  app.innerHTML=`<h1>Received material</h1><p class="lead">Log material coming into the warehouse. Northside tickets are added from the Owner tab.</p>
   <form class="card" id="f" novalidate>
     <div class="field"><label for="iItem">Item</label><div id="cItem"></div><div class="onhand-note" id="iNote"></div>
       <div class="newitem" id="newBox" hidden><strong>New item.</strong> Use Northside's exact name so reports match their tickets.
         <div class="grid2" style="margin-top:10px"><div><label for="nUom">Unit</label><select class="input" id="nUom">${UOMS.map(u=>`<option>${u}</option>`).join('')}</select></div>
         <div><label for="nCat">Category</label><select class="input" id="nCat">${CATS.map(c=>`<option ${c==='General Supplies'?'selected':''}>${esc(c)}</option>`).join('')}</select></div></div></div></div>
     <div class="field"><label for="iQty">Quantity</label>${qtyField('iQty')}</div>
-    <div class="field"><label for="iPerson">Brought in by <span class="hint">optional</span></label><div id="cPerson"></div></div>
+    <div class="field"><label for="iPerson">Received by <span class="hint">optional</span></label><div id="cPerson"></div></div>
     <div class="field"><label for="iNoteIn">Note <span class="hint">optional</span></label><input class="input" id="iNoteIn" placeholder="Where it came from"></div>
-    <button class="btn patina full" id="go">Bring in</button>
+    <button class="btn patina full" id="go">Save received</button>
   </form>`;
   const item=combo($('#cItem'),{id:'iItem',placeholder:'Search or add an item',value:S.prefill||'',options:itemOpts,allowAdd:true,addLabel:'Add new item',
     onPick:(v,isNew)=>{ $('#newBox').hidden=!isNew; const it=itemByName(v); $('#iNote').textContent=it?`${fmtQty(it.onHand)} ${it.uom} on hand`:''; }});
   S.prefill='';
-  const person=combo($('#cPerson'),{id:'iPerson',placeholder:'Who brought it in',options:listOpts(S.data.people),allowAdd:true,addLabel:'Add person'});
+  const person=combo($('#cPerson'),{id:'iPerson',placeholder:'Who received it',options:listOpts(S.data.people),allowAdd:true,addLabel:'Add person'});
   wireQty(app,'iQty');
   $('#f').addEventListener('submit',async e=>{
     e.preventDefault();
@@ -375,8 +376,8 @@ function inView(app){
       let nm=name;
       if(!itemByName(name)){ const a=await api('addItem',{item:name,uom:$('#nUom').value,category:$('#nCat').value}); nm=a.item; }
       const r=await api('stockIn',{item:nm,qty:$('#iQty').value,person:person.value||$('#iPerson').value.trim(),note:$('#iNoteIn').value});
-      await load(); toast(`Brought in. ${fmtQty(r.onHand)} on hand now.`); inView(app);
-    }catch(err){ toast(err.message,1); btn.disabled=false; btn.textContent='Bring in'; }
+      await load(); toast(`Received saved. ${fmtQty(r.onHand)} on hand now.`); inView(app);
+    }catch(err){ toast(err.message,1); btn.disabled=false; btn.textContent='Save received'; }
   });
 }
 
@@ -408,10 +409,10 @@ function ticketsView(el){
   const ts=S.owner.tickets.slice().sort((a,b)=>String(b.Date).localeCompare(a.Date)||String(b.Ticket).localeCompare(a.Ticket));
   const total=ts.reduce((a,t)=>a+Number(t.Total),0);
   el.innerHTML=`<div class="stat"><div><b>${ts.length}</b>Tickets</div><div><b>${money(total)}</b>Total billed</div></div>
-  <div class="scroll"><table><tr><th>Ticket</th><th>Date</th><th>P.O.</th><th class="n">Lines</th><th class="n">Total</th><th>Check</th></tr>
-  ${ts.map(t=>{const c=ticketCheck(t);return `<tr data-t="${esc(t.Ticket)}" style="cursor:pointer"><td><b>${esc(t.Ticket)}</b></td><td>${niceDate(t.Date)}</td><td>${esc(t.PO)}</td>
-  <td class="n">${c.ls.length}</td><td class="n">${money(t.Total)}</td><td class="${c.ok?'ok':'bad'}">${c.ok?'OK':'Check'}</td></tr>`}).join('')}</table></div>`;
-  el.querySelectorAll('[data-t]').forEach(r=>r.addEventListener('click',()=>ticketSheet(r.dataset.t)));
+  <div class="scroll"><table><tr><th>Ticket</th><th>Date</th><th>P.O.</th><th class="n">Total</th><th>PDF</th></tr>
+  ${ts.map(t=>{return `<tr data-t="${esc(t.Ticket)}" style="cursor:pointer"><td><b>${esc(t.Ticket)}</b></td><td>${niceDate(t.Date)}</td><td>${esc(t.PO)}</td>
+  <td class="n">${money(t.Total)}</td><td>${t.PdfLink?`<a href="${esc(t.PdfLink)}" target="_blank" rel="noopener" data-pdf>View</a>`:''}</td></tr>`}).join('')}</table></div>`;
+  el.querySelectorAll('[data-t]').forEach(r=>r.addEventListener('click',e=>{ if(e.target.closest('[data-pdf]')) return; ticketSheet(r.dataset.t); }));
 }
 function ticketSheet(no){
   const t=S.owner.tickets.find(x=>x.Ticket===no); const c=ticketCheck(t);
@@ -501,7 +502,7 @@ function reportsView(el){
   const R=S.report;
   el.innerHTML=`<div class="card"><div class="grid2">
     <div class="field"><label for="rType">Show</label><select class="input" id="rType">
-      <option value="OUT">Taken out</option><option value="IN">Brought in</option><option value="ADJUST">Count adjustments</option><option value="ALL">Everything</option></select></div>
+      <option value="OUT">Outgoing</option><option value="IN">Received</option><option value="ADJUST">Count adjustments</option><option value="ALL">Everything</option></select></div>
     <div class="grid2"><div class="field"><label for="rFrom">From</label><input class="input" type="date" id="rFrom" value="${R.from}"></div>
       <div class="field"><label for="rTo">To</label><input class="input" type="date" id="rTo" value="${R.to}"></div></div>
     <div class="field"><label for="rItem">Item</label><div id="cItem"></div></div>
