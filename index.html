@@ -138,6 +138,15 @@ td.n,th.n{text-align:right;white-space:nowrap}
 .setup{max-width:560px;margin:40px auto}
 .setup code{background:var(--tag);padding:2px 6px;border-radius:4px}
 a[data-pdf]{color:var(--copper-deep);font-weight:600}
+.dayhead{font-family:"Barlow Condensed",Arial Narrow,sans-serif;font-weight:600;font-size:19px;color:var(--soft);margin:20px 0 2px}
+.pill.done{background:var(--patina-soft);color:var(--patina)}
+.pill.part{background:var(--tag);color:var(--copper-deep)}
+.pill.open{background:#EFEAE2;color:var(--soft)}
+.trow{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;padding:12px 2px;border-bottom:1px solid var(--line)}
+.trow .name{font-weight:600;line-height:1.25}
+.trow .meta{font-size:13px;color:var(--soft);margin-top:2px}
+.trow .left{font-family:"Barlow Condensed",sans-serif;font-weight:700;font-size:20px;color:var(--copper-deep)}
+.linkbtn{border:0;background:none;padding:0;color:var(--copper-deep);font-weight:600;text-decoration:underline}
 [hidden]{display:none!important}
 </style>
 </head>
@@ -172,7 +181,7 @@ const CATS = ['PVC DWV','PEX (Uponor)','CPVC / PVC Pressure','Copper','Gas / Bla
 const S = {
   tab:'stock', data:{items:[],people:[],projects:[],moves:[]},
   pin:'', owner:null, ownerTab:'tickets', cat:'All', q:'',
-  who: safeGet('whoName') || '', report:{type:'OUT',from:'',to:'',item:'',project:'',person:''}
+  who: safeGet('whoName') || '', stockMode: safeGet('stockMode')==='ticket'?'ticket':'item', tq:'', tf:'all', tkLast:{person:'',project:'',date:''}, report:{type:'OUT',from:'',to:'',item:'',project:'',person:''}
 };
 
 function safeGet(k){ try{return localStorage.getItem(k)}catch(e){return null} }
@@ -264,9 +273,13 @@ function setupView(app){
   <p>This app still needs its connection to your Google Sheet. Open <code>index.html</code>, find <code>PASTE_YOUR_WEB_APP_URL_HERE</code> near the top of the script, and paste the Web app URL from Apps Script there.</p></div>`;
 }
 
+const modeSeg = () => `<div class="seg" style="margin-bottom:12px"><button type="button" class="${S.stockMode==='item'?'on':''}" data-mode="item">By item</button><button type="button" class="${S.stockMode==='ticket'?'on':''}" data-mode="ticket">By ticket</button></div>`;
+function wireMode(app){ app.querySelectorAll('[data-mode]').forEach(b=>b.addEventListener('click',()=>{S.stockMode=b.dataset.mode;safeSet('stockMode',S.stockMode);stockView(app);})); }
+
 function stockView(app){
+  if(S.stockMode==='ticket') return byTicketView(app);
   const cats=['All',...CATS.filter(c=>S.data.items.some(i=>i.category===c)),...[...new Set(S.data.items.map(i=>i.category))].filter(c=>!CATS.includes(c))];
-  app.innerHTML=`<h1>Stock on hand</h1>
+  app.innerHTML=`<h1>Stock on hand</h1>${modeSeg()}
   <div class="tools"><input class="search" id="q" type="search" placeholder="Search items" value="${esc(S.q)}" autocapitalize="characters"></div>
   <div class="cats">${cats.map(c=>`<button type="button" class="${c===S.cat?'on':''}" data-cat="${esc(c)}">${esc(c)}</button>`).join('')}</div>
   <p class="count-line" id="countLine"></p><div class="list" id="list"></div>`;
@@ -280,10 +293,129 @@ function stockView(app){
       <div class="tag ${i.onHand<0?'neg':i.onHand===0?'zero':''}"><b>${fmtQty(i.onHand)}</b><span>${esc(i.uom)}</span></div></button>`).join('')
       :`<div class="empty">No items match. Add new material from Received.</div>`;
   };
-  draw();
+  draw(); wireMode(app);
   $('#q').addEventListener('input',e=>{S.q=e.target.value;draw();});
   app.querySelectorAll('[data-cat]').forEach(b=>b.addEventListener('click',()=>{S.cat=b.dataset.cat;stockView(app);}));
   $('#list').addEventListener('click',e=>{const r=e.target.closest('[data-item]'); if(r) itemSheet(r.dataset.item);});
+}
+
+/* ---------- By ticket ---------- */
+// An outgoing entry belongs to a ticket if the sheet saved a ticket number on it, or its note starts with "Ticket 012345"
+const outTicket = m => m.type==='OUT' ? String(((/^Ticket\s+([^\s,.]+)/i.exec(m.note||'')||[])[1]) || m.ticket || '') : '';
+function ticketData(){
+  const map={};
+  S.data.moves.forEach(m=>{
+    if(m.type!=='IN' || !m.ticket) return;
+    const no=String(m.ticket);
+    const t=map[no]=map[no]||{no,date:m.date||'',po:m.person||'',lines:{}};
+    if(m.date && (!t.date || m.date<t.date)) t.date=m.date;
+    const l=t.lines[m.item]=t.lines[m.item]||{item:m.item,rec:0,sent:0};
+    l.rec+=Number(m.qty)||0;
+  });
+  S.data.moves.forEach(m=>{ const no=outTicket(m); if(!no||!map[no]) return; const l=map[no].lines[m.item]; if(l) l.sent+=Number(m.qty)||0; });
+  return Object.values(map).map(t=>{
+    const lines=Object.values(t.lines).map(l=>Object.assign(l,{left:Math.max(0,+(l.rec-l.sent).toFixed(3)),uom:(itemByName(l.item)||{}).uom||''}));
+    const done=lines.filter(l=>l.left===0).length, started=lines.some(l=>l.sent>0);
+    return {no:t.no,date:t.date,po:t.po,lines,done,status:done===lines.length?'done':started?'part':'open'};
+  }).sort((a,b)=>String(b.date).localeCompare(a.date)||String(b.no).localeCompare(a.no));
+}
+const longDate = s => { const p=String(s||'').split('-'); if(p.length<3) return s||'No date'; const d=new Date(+p[0],+p[1]-1,+p[2]);
+  return d.toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric',year:'numeric'}); };
+const statusPill = t => t.status==='done'?'<span class="pill done">All sent out</span>':t.status==='part'?`<span class="pill part">${t.done} of ${t.lines.length} done</span>`:'<span class="pill open">Not started</span>';
+
+function byTicketView(app){
+  const all=ticketData();
+  const filters={all:'All tickets',todo:'Still to do',done:'Finished'};
+  app.innerHTML=`<h1>Stock by ticket</h1>${modeSeg()}
+  <div class="tools"><input class="search" id="tq" type="search" placeholder="Search ticket number, item or P.O." value="${esc(S.tq)}" autocapitalize="characters"></div>
+  <div class="cats">${Object.entries(filters).map(([k,v])=>`<button type="button" class="${S.tf===k?'on':''}" data-tf="${k}">${v}</button>`).join('')}</div>
+  <p class="count-line" id="tCount"></p><div id="tList"></div>`;
+  const draw=()=>{
+    const words=norm(S.tq).split(' ').filter(Boolean);
+    const rows=all.filter(t=>(S.tf==='all'||(S.tf==='done'?t.status==='done':t.status!=='done'))
+      && words.every(w=>norm(t.no).includes(w)||norm(t.po).includes(w)||t.lines.some(l=>norm(l.item).includes(w))));
+    $('#tCount').textContent=`${rows.length} ticket${rows.length===1?'':'s'}`;
+    if(!rows.length){ $('#tList').innerHTML=`<div class="empty">${all.length?'No tickets match.':'No tickets yet. Tickets show up here once they are added from the Owner tab.'}</div>`; return; }
+    let h='', day=null;
+    rows.forEach(t=>{
+      if(t.date!==day){ if(day!==null) h+='</div>'; day=t.date; h+=`<div class="dayhead">${esc(longDate(t.date))}</div><div class="list">`; }
+      h+=`<button type="button" class="row" data-tk="${esc(t.no)}"><div><div class="name">Ticket ${esc(t.no)}</div>
+        <div class="meta">${t.lines.length} item${t.lines.length===1?'':'s'}${t.po?', P.O. '+esc(t.po):''}</div></div><div>${statusPill(t)}</div></button>`;
+    });
+    $('#tList').innerHTML=h+'</div>';
+  };
+  draw(); wireMode(app);
+  $('#tq').addEventListener('input',e=>{S.tq=e.target.value;draw();});
+  app.querySelectorAll('[data-tf]').forEach(b=>b.addEventListener('click',()=>{S.tf=b.dataset.tf;byTicketView(app);}));
+  $('#tList').addEventListener('click',e=>{const r=e.target.closest('[data-tk]'); if(r) ticketOutSheet(r.dataset.tk);});
+}
+
+function ticketOutSheet(no){
+  const t=ticketData().find(x=>x.no===String(no)); if(!t) return closeSheet();
+  const ot=S.owner?S.owner.tickets.find(x=>String(x.Ticket)===t.no):null;
+  const ext=item=>S.owner.lines.filter(l=>String(l.Ticket)===t.no&&l.Item===item).reduce((a,l)=>a+Number(l.Extension),0);
+  const todo=t.lines.filter(l=>l.left>0);
+  openSheet(`<div class="sheet-head"><h2>Ticket ${esc(t.no)}</h2><button class="btn ghost small" data-close>Close</button></div>
+  <div class="stat"><div><b>${niceDate(t.date)||'none'}</b>Ticket date</div><div><b>${esc(t.po)||'none'}</b>P.O.</div><div><b>${t.done} of ${t.lines.length}</b>Items sent out</div>${ot?`<div><b>${money(ot.Total)}</b>Total</div>`:''}</div>
+  ${ot&&ot.PdfLink?`<p><a class="btn ghost small" href="${esc(ot.PdfLink)}" target="_blank" rel="noopener">Open the PDF</a></p>`:''}
+  ${todo.length>1?`<p><button class="btn small" id="tkAll">Send everything left to one project</button></p>`:''}
+  <div class="list">${t.lines.map((l,i)=>`<div class="trow"><div><div class="name">${esc(l.item)}</div>
+    <div class="meta">${fmtQty(l.rec)} ${esc(l.uom)} received, ${fmtQty(l.sent)} sent out${S.owner?', '+money(ext(l.item)):''}</div></div>
+    <div style="text-align:right">${l.left>0?`<div class="left">${fmtQty(l.left)} left</div><button class="btn small" data-li="${i}" style="margin-top:4px">Outgoing</button>`:'<span class="pill done">Done</span>'}</div></div>`).join('')}</div>
+  <p class="count-line" style="margin-top:12px">Only outgoing logged from this ticket counts here. Stock on hand always includes everything.</p>`);
+  $('#sheet').querySelectorAll('[data-li]').forEach(b=>b.addEventListener('click',()=>ticketOutForm(t,[t.lines[Number(b.dataset.li)]])));
+  const a=$('#tkAll'); if(a) a.addEventListener('click',()=>ticketOutForm(t,todo));
+}
+
+function ticketOutForm(t,lines){
+  const one=lines.length===1?lines[0]:null, L=S.tkLast;
+  openSheet(`<div class="sheet-head"><h2>${one?'Outgoing from ticket '+esc(t.no):'Send ticket '+esc(t.no)+' out'}</h2><button class="btn ghost small" id="tkBack">Back</button></div>
+  ${one?`<p style="font-weight:600;margin:0 0 12px">${esc(one.item)}</p>
+    <div class="field"><label for="tQty">Quantity</label>${qtyField('tQty')}<div class="onhand-note" id="tNote"></div></div>`
+   :`<p style="color:var(--soft);margin:0 0 12px">${lines.length} items, everything that is still left on this ticket.</p>
+    <div class="scroll" style="max-height:180px;overflow-y:auto;margin-bottom:14px"><table>${lines.map(l=>`<tr><td>${esc(l.item)}</td><td class="n">${fmtQty(l.left)} ${esc(l.uom)}</td></tr>`).join('')}</table></div>`}
+  <div class="grid2">
+    <div class="field"><label for="tPerson">Given to</label><div id="tcPerson"></div></div>
+    <div class="field"><label for="tProject">Project <span class="hint">leave blank for tools given to a person</span></label><div id="tcProject"></div></div>
+  </div>
+  <div class="field"><label for="tDate">Date it went out</label><input class="input" type="date" id="tDate" value="${esc(L.date||today())}" max="${today()}">
+    <div class="onhand-note"><button type="button" class="linkbtn" id="tUseTk">Use the ticket date, ${niceDate(t.date)}</button></div></div>
+  <div class="field"><label for="tNoteIn">Note <span class="hint">optional</span></label><input class="input" id="tNoteIn"></div>
+  <button class="btn full" id="tGo">${one?'Save outgoing':'Send all '+lines.length+' items out'}</button>`);
+  const sh=$('#sheet');
+  $('#tkBack').addEventListener('click',()=>ticketOutSheet(t.no));
+  $('#tUseTk').addEventListener('click',()=>{ if(t.date) $('#tDate').value=t.date; });
+  const person=combo($('#tcPerson'),{id:'tPerson',placeholder:'Who took it',value:L.person,options:listOpts(S.data.people),allowAdd:true,addLabel:'Add person'});
+  const project=combo($('#tcProject'),{id:'tProject',placeholder:'Pick or add a project',value:L.project,options:listOpts(S.data.projects),allowAdd:true,addLabel:'Add project'});
+  if(one){
+    const it=itemByName(one.item)||{onHand:0,uom:one.uom}, note=$('#tNote');
+    const refresh=()=>{ const q=Number($('#tQty').value)||0;
+      note.className='onhand-note'+(q>one.left?' warn':'');
+      note.textContent=q>one.left?`Only ${fmtQty(one.left)} ${one.uom} left on this ticket. You can still save it.`:`${fmtQty(one.left)} ${one.uom} left on this ticket, ${fmtQty(it.onHand)} on hand in the warehouse`; };
+    wireQty(sh,'tQty',refresh); $('#tQty').value=one.left; refresh();
+  }
+  $('#tGo').addEventListener('click',async()=>{
+    const pv=person.value||$('#tPerson').value.trim(); if(!pv) return toast('Pick who took it',1);
+    const prv=project.value||$('#tProject').value.trim();
+    const date=$('#tDate').value||today();
+    if(one && !(Number($('#tQty').value)>0)) return toast('Quantity has to be more than 0',1);
+    const extra=$('#tNoteIn').value.trim();
+    const note=`Ticket ${t.no}`+(date!==today()?`, went out ${niceDate(date)}`:'')+(extra?'. '+extra:'');
+    const jobs=one?[{item:one.item,qty:$('#tQty').value}]:lines.map(l=>({item:l.item,qty:l.left}));
+    const btn=$('#tGo'), label=btn.textContent; btn.disabled=true;
+    let saved=0, fail='';
+    for(const j of jobs){
+      btn.textContent=jobs.length>1?`Saving ${saved+1} of ${jobs.length}…`:'Saving…';
+      try{ await api('stockOut',{item:j.item,qty:j.qty,person:pv,project:prv,note,ticket:t.no,date}); saved++; }
+      catch(err){ fail=err.message; break; }
+    }
+    S.tkLast={person:pv,project:prv,date:date===today()?'':date};
+    try{ await load(); }catch(e){}
+    if(fail && !saved){ toast(fail,1); btn.disabled=false; btn.textContent=label; return; }
+    toast(fail?`Saved ${saved} of ${jobs.length}, then stopped: ${fail}`:(jobs.length>1?`${saved} items sent out from ticket ${t.no}`:`Outgoing saved from ticket ${t.no}`),fail?1:0);
+    if(S.tab==='stock') stockView($('#app'));
+    ticketOutSheet(t.no);
+  });
 }
 
 function itemSheet(name){
@@ -405,19 +537,33 @@ function ticketCheck(t){
   const ok=Math.abs(sum-Number(t.Subtotal))<0.02 && Math.abs(Number(t.Subtotal)+Number(t.Tax)-Number(t.Total))<0.02;
   return {ls,sum,ok};
 }
+// Northside statements close on the 25th. Tickets dated through the 25th are due the 10th of the next month; later ones roll to the month after.
+const dueDate = s => { const p=String(s||'').split('-').map(Number); if(!p[0]||!p[1]||!p[2]) return '';
+  const d=new Date(p[0],p[1]-1+(p[2]>25?2:1),10); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-10'; };
+const dueLabel = s => { const p=String(s||'').split('-'); return p.length<3?'No date':new Date(+p[0],+p[1]-1,+p[2]).toLocaleDateString(undefined,{month:'long',day:'numeric',year:'numeric'}); };
 function ticketsView(el){
   const ts=S.owner.tickets.slice().sort((a,b)=>String(b.Date).localeCompare(a.Date)||String(b.Ticket).localeCompare(a.Ticket));
   const total=ts.reduce((a,t)=>a+Number(t.Total),0);
+  const groups={}; ts.forEach(t=>{ const k=dueDate(t.Date); (groups[k]=groups[k]||[]).push(t); });
+  const keys=Object.keys(groups).sort((a,b)=>b.localeCompare(a));
+  const sum=(arr,f)=>arr.reduce((a,t)=>a+Number(t[f]),0);
   el.innerHTML=`<div class="stat"><div><b>${ts.length}</b>Tickets</div><div><b>${money(total)}</b>Total billed</div></div>
-  <div class="scroll"><table><tr><th>Ticket</th><th>Date</th><th>P.O.</th><th class="n">Total</th><th>PDF</th></tr>
-  ${ts.map(t=>{return `<tr data-t="${esc(t.Ticket)}" style="cursor:pointer"><td><b>${esc(t.Ticket)}</b></td><td>${niceDate(t.Date)}</td><td>${esc(t.PO)}</td>
-  <td class="n">${money(t.Total)}</td><td>${t.PdfLink?`<a href="${esc(t.PdfLink)}" target="_blank" rel="noopener" data-pdf>View</a>`:''}</td></tr>`}).join('')}</table></div>`;
+  <h2 style="margin-top:6px">By statement</h2>
+  <div class="scroll"><table><tr><th>Statement due</th><th class="n">Tickets</th><th class="n">Subtotal</th><th class="n">Tax</th><th class="n">Total</th></tr>
+  ${keys.map(k=>`<tr><td><b>${esc(dueLabel(k))}</b></td><td class="n">${groups[k].length}</td><td class="n">${money(sum(groups[k],'Subtotal'))}</td><td class="n">${money(sum(groups[k],'Tax'))}</td><td class="n"><b>${money(sum(groups[k],'Total'))}</b></td></tr>`).join('')}</table></div>
+  ${keys.map(k=>{ const g=groups[k], ds=g.map(t=>String(t.Date)).sort();
+    return `<h2 style="margin-top:28px;padding-top:14px;border-top:3px solid var(--copper)">Due ${esc(dueLabel(k))}</h2>
+    <div class="stat"><div><b>${g.length}</b>Tickets</div><div><b>${money(sum(g,'Total'))}</b>Statement total</div><div><b>${niceDate(ds[0])} to ${niceDate(ds[ds.length-1])}</b>Ticket dates</div></div>
+    <div class="scroll"><table><tr><th>Ticket</th><th>Date</th><th>P.O.</th><th class="n">Total</th><th>PDF</th></tr>
+    ${g.map(t=>`<tr data-t="${esc(t.Ticket)}" style="cursor:pointer"><td><b>${esc(t.Ticket)}</b></td><td>${niceDate(t.Date)}</td><td>${esc(t.PO)}</td>
+    <td class="n">${money(t.Total)}</td><td>${t.PdfLink?`<a href="${esc(t.PdfLink)}" target="_blank" rel="noopener" data-pdf>View</a>`:''}</td></tr>`).join('')}
+    <tr><td colspan="3" class="n">Total due ${esc(dueLabel(k))}</td><td class="n"><b>${money(sum(g,'Total'))}</b></td><td></td></tr></table></div>`; }).join('')}`;
   el.querySelectorAll('[data-t]').forEach(r=>r.addEventListener('click',e=>{ if(e.target.closest('[data-pdf]')) return; ticketSheet(r.dataset.t); }));
 }
 function ticketSheet(no){
   const t=S.owner.tickets.find(x=>x.Ticket===no); const c=ticketCheck(t);
   openSheet(`<div class="sheet-head"><h2>Ticket ${esc(t.Ticket)}</h2><button class="btn ghost small" data-close>Close</button></div>
-  <div class="stat"><div><b>${niceDate(t.Date)}</b>Date</div><div><b>${esc(t.PO)||'none'}</b>P.O.</div><div><b>${money(t.Total)}</b>Total</div><div><b class="${c.ok?'ok':'bad'}">${c.ok?'OK':'Check'}</b>Totals check</div></div>
+  <div class="stat"><div><b>${niceDate(t.Date)}</b>Date</div><div><b>${niceDate(dueDate(t.Date))}</b>Due</div><div><b>${esc(t.PO)||'none'}</b>P.O.</div><div><b>${money(t.Total)}</b>Total</div><div><b class="${c.ok?'ok':'bad'}">${c.ok?'OK':'Check'}</b>Totals check</div></div>
   <p style="color:var(--soft);margin-top:-4px">${esc(t.ShipVia)}${t.PickTicket?', pick ticket '+esc(t.PickTicket):''}</p>
   ${t.PdfLink?`<p><a class="btn ghost small" href="${esc(t.PdfLink)}" target="_blank" rel="noopener">Open the PDF</a></p>`:''}
   <div class="scroll"><table><tr><th class="n">Qty</th><th>Northside description</th><th>UOM</th><th class="n">Price</th><th class="n">Ext.</th></tr>
