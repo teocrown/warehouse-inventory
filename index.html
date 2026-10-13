@@ -147,6 +147,16 @@ a[data-pdf]{color:var(--copper-deep);font-weight:600}
 .trow .meta{font-size:13px;color:var(--soft);margin-top:2px}
 .trow .left{font-family:"Barlow Condensed",sans-serif;font-weight:700;font-size:20px;color:var(--copper-deep)}
 .linkbtn{border:0;background:none;padding:0;color:var(--copper-deep);font-weight:600;text-decoration:underline}
+.lnum{display:inline-block;min-width:22px;margin-right:6px;color:var(--soft);font-weight:500;font-size:13px}
+.houses{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
+.house{background:var(--patina-soft);color:var(--patina);border-radius:6px;padding:2px 8px;font-size:12px;font-weight:600}
+.hlist{border-top:1px solid var(--line)}
+.hrow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:12px;align-items:start;padding:12px 2px;border-bottom:1px solid var(--line)}
+.hrow .meta{font-size:13px;color:var(--soft);margin:2px 0 0 28px}
+.hfields{display:grid;grid-template-columns:90px minmax(0,1fr);gap:8px}
+.hfields .input{padding:10px 12px;font-size:16px}
+.hfields .hcopy{grid-column:2;justify-self:start;font-size:13px}
+@media (max-width:640px){.hrow{grid-template-columns:1fr}}
 [hidden]{display:none!important}
 </style>
 </head>
@@ -309,10 +319,12 @@ function ticketData(){
     const no=String(m.ticket);
     const t=map[no]=map[no]||{no,date:m.date||'',po:m.person||'',lines:{}};
     if(m.date && (!t.date || m.date<t.date)) t.date=m.date;
-    const l=t.lines[m.item]=t.lines[m.item]||{item:m.item,rec:0,sent:0};
+    const l=t.lines[m.item]=t.lines[m.item]||{item:m.item,rec:0,sent:0,to:{}};
     l.rec+=Number(m.qty)||0;
   });
-  S.data.moves.forEach(m=>{ const no=outTicket(m); if(!no||!map[no]) return; const l=map[no].lines[m.item]; if(l) l.sent+=Number(m.qty)||0; });
+  // Lines stay in the order they were printed on the ticket (the order they were added). Each line remembers which house it went to.
+  S.data.moves.forEach(m=>{ const no=outTicket(m); if(!no||!map[no]) return; const l=map[no].lines[m.item]; if(!l) return;
+    const q=Number(m.qty)||0; l.sent+=q; const k=String(m.project||'').trim()||('No house, given to '+(m.person||'someone')); l.to[k]=(l.to[k]||0)+q; });
   return Object.values(map).map(t=>{
     const lines=Object.values(t.lines).map(l=>Object.assign(l,{left:Math.max(0,+(l.rec-l.sent).toFixed(3)),uom:(itemByName(l.item)||{}).uom||''}));
     const done=lines.filter(l=>l.left===0).length, started=lines.some(l=>l.sent>0);
@@ -358,13 +370,71 @@ function ticketOutSheet(no){
   openSheet(`<div class="sheet-head"><h2>Ticket ${esc(t.no)}</h2><button class="btn ghost small" data-close>Close</button></div>
   <div class="stat"><div><b>${niceDate(t.date)||'none'}</b>Ticket date</div><div><b>${esc(t.po)||'none'}</b>P.O.</div><div><b>${t.done} of ${t.lines.length}</b>Items sent out</div>${ot?`<div><b>${money(ot.Total)}</b>Total</div>`:''}</div>
   ${ot&&ot.PdfLink?`<p><a class="btn ghost small" href="${esc(ot.PdfLink)}" target="_blank" rel="noopener">Open the PDF</a></p>`:''}
-  ${todo.length>1?`<p><button class="btn small" id="tkAll">Send everything left to one project</button></p>`:''}
-  <div class="list">${t.lines.map((l,i)=>`<div class="trow"><div><div class="name">${esc(l.item)}</div>
-    <div class="meta">${fmtQty(l.rec)} ${esc(l.uom)} received, ${fmtQty(l.sent)} sent out${S.owner?', '+money(ext(l.item)):''}</div></div>
+  ${todo.length?`<p style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn small" id="tkHouses">Pick a house for each line</button>${todo.length>1?`<button class="btn ghost small" id="tkAll">Send everything left to one house</button>`:''}</p>`:''}
+  <div class="list">${t.lines.map((l,i)=>`<div class="trow"><div><div class="name"><span class="lnum">${i+1}</span>${esc(l.item)}</div>
+    <div class="meta">${fmtQty(l.rec)} ${esc(l.uom)} received, ${fmtQty(l.sent)} sent out${S.owner?', '+money(ext(l.item)):''}</div>
+    ${Object.keys(l.to).length?`<div class="houses">${Object.entries(l.to).map(([h,q])=>`<span class="house">${esc(h)}: ${fmtQty(q)} ${esc(l.uom)}</span>`).join('')}</div>`:''}</div>
     <div style="text-align:right">${l.left>0?`<div class="left">${fmtQty(l.left)} left</div><button class="btn small" data-li="${i}" style="margin-top:4px">Outgoing</button>`:'<span class="pill done">Done</span>'}</div></div>`).join('')}</div>
   <p class="count-line" style="margin-top:12px">Only outgoing logged from this ticket counts here. Stock on hand always includes everything.</p>`);
   $('#sheet').querySelectorAll('[data-li]').forEach(b=>b.addEventListener('click',()=>ticketOutForm(t,[t.lines[Number(b.dataset.li)]])));
   const a=$('#tkAll'); if(a) a.addEventListener('click',()=>ticketOutForm(t,todo));
+  const hb=$('#tkHouses'); if(hb) hb.addEventListener('click',()=>ticketHousesForm(t));
+}
+
+/* Every line still left on the ticket, in ticket order, each with its own house box. Lines left blank are skipped. */
+function ticketHousesForm(t){
+  const L=S.tkLast, todo=t.lines.map((l,i)=>Object.assign({n:i+1},l)).filter(l=>l.left>0);
+  const houses=[...new Set([...(S.data.projects||[]),...S.data.moves.map(m=>String(m.project||'').trim())].filter(Boolean))].sort();
+  openSheet(`<div class="sheet-head"><h2>Ticket ${esc(t.no)}: pick a house for each line</h2><button class="btn ghost small" id="tkBack">Back</button></div>
+  <p style="color:var(--soft);margin:0 0 12px">Type or pick the house on each line. Change the quantity if only part of it went there. Leave the house blank to skip a line for now.</p>
+  <div class="grid2">
+    <div class="field"><label for="hPerson">Given to</label><div id="hcPerson"></div></div>
+    <div class="field"><label for="hDate">Date it went out</label><input class="input" type="date" id="hDate" value="${esc(L.date||today())}" max="${today()}">
+      <div class="onhand-note"><button type="button" class="linkbtn" id="hUseTk">Use the ticket date, ${niceDate(t.date)}</button></div></div>
+  </div>
+  <datalist id="houseList">${houses.map(h=>`<option value="${esc(h)}">`).join('')}</datalist>
+  <div class="hlist">${todo.map((l,i)=>`<div class="hrow">
+    <div class="hitem"><span class="lnum">${l.n}</span><b>${esc(l.item)}</b><div class="meta">${fmtQty(l.left)} ${esc(l.uom)} left</div></div>
+    <div class="hfields"><input class="input hq" type="number" inputmode="decimal" min="0" step="any" data-q="${i}" value="${l.left}" aria-label="Quantity, line ${l.n}">
+      <input class="input hh" list="houseList" data-h="${i}" placeholder="House" autocapitalize="characters" autocomplete="off" aria-label="House, line ${l.n}">
+      ${i<todo.length-1?`<button type="button" class="linkbtn hcopy" data-copy="${i}">Same house below</button>`:''}</div>
+  </div>`).join('')}</div>
+  <button class="btn full" id="hGo" style="margin-top:14px">Save</button>`);
+  const sh=$('#sheet');
+  $('#tkBack').addEventListener('click',()=>ticketOutSheet(t.no));
+  $('#hUseTk').addEventListener('click',()=>{ if(t.date) $('#hDate').value=t.date; });
+  const person=combo($('#hcPerson'),{id:'hPerson',placeholder:'Who took it',value:L.person,options:listOpts(S.data.people),allowAdd:true,addLabel:'Add person'});
+  // "Same house below" copies this line's house into every line under it that is still blank
+  sh.querySelectorAll('[data-copy]').forEach(b=>b.addEventListener('click',()=>{ const i=+b.dataset.copy, v=sh.querySelector(`[data-h="${i}"]`).value.trim();
+    if(!v) return toast('Type a house on this line first',1);
+    sh.querySelectorAll('[data-h]').forEach(x=>{ if(+x.dataset.h>i && !x.value.trim()) x.value=v; }); }));
+  $('#hGo').addEventListener('click',async()=>{
+    const pv=person.value||$('#hPerson').value.trim(); if(!pv) return toast('Pick who took it',1);
+    const date=$('#hDate').value||today();
+    const jobs=[];
+    for(let i=0;i<todo.length;i++){
+      const h=sh.querySelector(`[data-h="${i}"]`).value.trim(); if(!h) continue;
+      const q=Number(sh.querySelector(`[data-q="${i}"]`).value);
+      if(!(q>0)) return toast(`Line ${todo[i].n}: quantity has to be more than 0`,1);
+      if(q>todo[i].left) return toast(`Line ${todo[i].n}: only ${fmtQty(todo[i].left)} ${todo[i].uom} left on this ticket`,1);
+      jobs.push({item:todo[i].item,qty:q,project:h.toUpperCase()});
+    }
+    if(!jobs.length) return toast('Type a house on at least one line',1);
+    const note=`Ticket ${t.no}`+(date!==today()?`, went out ${niceDate(date)}`:'');
+    const btn=$('#hGo'); btn.disabled=true;
+    let saved=0, fail='';
+    for(const j of jobs){
+      btn.textContent=`Saving ${saved+1} of ${jobs.length}…`;
+      try{ await api('stockOut',{item:j.item,qty:j.qty,person:pv,project:j.project,note,ticket:t.no,date}); saved++; }
+      catch(err){ fail=err.message; break; }
+    }
+    S.tkLast={person:pv,project:L.project,date:date===today()?'':date};
+    try{ await load(); }catch(e){}
+    if(fail && !saved){ toast(fail,1); btn.disabled=false; btn.textContent='Save'; return; }
+    toast(fail?`Saved ${saved} of ${jobs.length}, then stopped: ${fail}`:`${saved} line${saved===1?'':'s'} saved from ticket ${t.no}`,fail?1:0);
+    if(S.tab==='stock') stockView($('#app'));
+    ticketOutSheet(t.no);
+  });
 }
 
 function ticketOutForm(t,lines){
