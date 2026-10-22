@@ -124,6 +124,7 @@ td.n,th.n{text-align:right;white-space:nowrap}
 .pill.out{background:var(--tag);color:var(--copper-deep)}
 .pill.adj{background:#ECE8F3;color:#5A4A7A}
 .pill.new{background:var(--warn-soft);color:var(--warn)}
+.warnbox{background:var(--warn-soft);border-color:var(--warn)}
 .seg{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}
 .seg button{border:1px solid var(--line);background:var(--card);border-radius:999px;padding:8px 16px;font-weight:600}
 .seg button.on{background:var(--copper);border-color:var(--copper);color:#fff}
@@ -215,7 +216,9 @@ async function api(action, body){
   return j.data;
 }
 async function load(){ S.data = await api('bootstrap'); }
-async function loadOwner(){ S.owner = await api('ownerData',{pin:S.pin}); }
+async function loadOwner(){ S.owner = await api('ownerData',{pin:S.pin}); await loadAuto(); }
+async function loadAuto(){ try{ S.auto = await api('autoLog',{pin:S.pin}); }catch(e){ S.auto = null; } }
+const autoReview = () => (S.auto||[]).filter(a=>a.status==='REVIEW');
 
 function toast(msg, err){
   const t=$('#toast'); t.textContent=msg; t.className='toast show'+(err?' err':'');
@@ -595,10 +598,11 @@ function ownerView(app){
     $('#pin').addEventListener('keydown',e=>{if(e.key==='Enter')go();});
     $('#pin').focus(); return;
   }
-  const tabs={tickets:'Tickets',add:'Add ticket',count:'Count',reports:'Reports'};
+  const nr=autoReview().length;
+  const tabs={tickets:'Tickets',prices:'Prices',auto:nr?`Auto tickets (${nr})`:'Auto tickets',add:'Add ticket',count:'Count',reports:'Reports'};
   app.innerHTML=`<h1>Owner</h1><div class="seg">${Object.entries(tabs).map(([k,v])=>`<button type="button" class="${S.ownerTab===k?'on':''}" data-o="${k}">${v}</button>`).join('')}</div><div id="ob"></div>`;
   app.querySelectorAll('[data-o]').forEach(b=>b.addEventListener('click',()=>{S.ownerTab=b.dataset.o;ownerView(app);}));
-  ({tickets:ticketsView,add:addTicketView,count:countView,reports:reportsView})[S.ownerTab]($('#ob'));
+  ({tickets:ticketsView,prices:pricesView,auto:autoView,add:addTicketView,count:countView,reports:reportsView})[S.ownerTab]($('#ob'));
 }
 
 function ticketCheck(t){
@@ -617,7 +621,9 @@ function ticketsView(el){
   const groups={}; ts.forEach(t=>{ const k=dueDate(t.Date); (groups[k]=groups[k]||[]).push(t); });
   const keys=Object.keys(groups).sort((a,b)=>b.localeCompare(a));
   const sum=(arr,f)=>arr.reduce((a,t)=>a+Number(t[f]),0);
-  el.innerHTML=`<div class="stat"><div><b>${ts.length}</b>Tickets</div><div><b>${money(total)}</b>Total billed</div></div>
+  const nr=autoReview().length;
+  el.innerHTML=`${nr?`<div class="card warnbox" style="margin-bottom:14px"><b>${nr} Northside ${nr===1?'ticket needs':'tickets need'} your review.</b> The app read ${nr===1?'it':'them'} from email but something didn't match. <button class="btn small" id="goAuto" style="margin-left:6px">Review</button></div>`:''}
+  <div class="stat"><div><b>${ts.length}</b>Tickets</div><div><b>${money(total)}</b>Total billed</div></div>
   <h2 style="margin-top:6px">By statement</h2>
   <div class="scroll"><table><tr><th>Statement due</th><th class="n">Tickets</th><th class="n">Subtotal</th><th class="n">Tax</th><th class="n">Total</th></tr>
   ${keys.map(k=>`<tr><td><b>${esc(dueLabel(k))}</b></td><td class="n">${groups[k].length}</td><td class="n">${money(sum(groups[k],'Subtotal'))}</td><td class="n">${money(sum(groups[k],'Tax'))}</td><td class="n"><b>${money(sum(groups[k],'Total'))}</b></td></tr>`).join('')}</table></div>
@@ -629,6 +635,7 @@ function ticketsView(el){
     <td class="n">${money(t.Total)}</td><td>${t.PdfLink?`<a href="${esc(t.PdfLink)}" target="_blank" rel="noopener" data-pdf>View</a>`:''}</td></tr>`).join('')}
     <tr><td colspan="3" class="n">Total due ${esc(dueLabel(k))}</td><td class="n"><b>${money(sum(g,'Total'))}</b></td><td></td></tr></table></div>`; }).join('')}`;
   el.querySelectorAll('[data-t]').forEach(r=>r.addEventListener('click',e=>{ if(e.target.closest('[data-pdf]')) return; ticketSheet(r.dataset.t); }));
+  const ga=$('#goAuto'); if(ga) ga.addEventListener('click',()=>{S.ownerTab='auto';ownerView($('#app'));});
 }
 function ticketSheet(no){
   const t=S.owner.tickets.find(x=>x.Ticket===no); const c=ticketCheck(t);
@@ -654,7 +661,7 @@ function addTicketView(el){
     const tickets=Array.isArray(d)?d:[d]; reviewTickets(tickets,$('#review'));
   });
 }
-function reviewTickets(tickets,box){
+function reviewTickets(tickets,box,onAdded){
   const nameMap={}; S.owner.names.forEach(n=>nameMap[norm(n.NorthsideDescription)]=n.Item);
   const exists=new Set(S.owner.tickets.map(t=>norm(t.Ticket)));
   box.innerHTML=tickets.map((d,ti)=>{
@@ -684,9 +691,93 @@ function reviewTickets(tickets,box){
       return {desc:l.desc,qty:l.qty,uom:l.uom,price:l.price,ext:l.ext,item:v,category:l.category||'General Supplies'}; });
     b.disabled=true; b.textContent='Adding…';
     try{ const r=await api('importTicket',{pin:S.pin,ticket:d.ticket,lines}); await load(); await loadOwner();
-      toast(`Ticket ${r.ticket} added: ${r.lines} lines`); b.textContent='Added'; exists.add(norm(d.ticket.no)); }
+      toast(`Ticket ${r.ticket} added: ${r.lines} lines`); b.textContent='Added'; exists.add(norm(d.ticket.no)); if(onAdded) onAdded(d); }
     catch(err){ toast(err.message,1); b.disabled=false; b.textContent=`Add ticket ${d.ticket.no} to inventory`; }
   }));
+}
+
+/* ---------- Prices (owner) ---------- */
+const unitPrice = n => '$'+(Number(n)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:3});
+function priceIndex(){
+  const tk={}; S.owner.tickets.forEach(t=>tk[String(t.Ticket)]=t);
+  const by={};
+  S.owner.lines.forEach(l=>{ const k=l.Item||l.NorthsideDescription; const e=by[k]=by[k]||{item:k,uom:l.UOM,buys:[],names:{}};
+    e.names[l.NorthsideDescription]=1; e.buys.push({ticket:String(l.Ticket),date:String(l.Date||''),qty:Number(l.Qty)||0,price:Number(l.UnitPrice)||0,ext:Number(l.Extension)||0,uom:l.UOM,desc:l.NorthsideDescription,pdf:(tk[String(l.Ticket)]||{}).PdfLink||''}); });
+  return Object.values(by).map(e=>{ e.buys.sort((a,b)=>b.date.localeCompare(a.date)||b.ticket.localeCompare(a.ticket));
+    const q=e.buys.reduce((a,b)=>a+b.qty,0), x=e.buys.reduce((a,b)=>a+b.ext,0), ps=e.buys.map(b=>b.price);
+    return Object.assign(e,{last:e.buys[0],avg:q?x/q:0,min:Math.min(...ps),max:Math.max(...ps),find:norm(e.item+' '+Object.keys(e.names).join(' '))}); });
+}
+function pricesView(el){
+  el.innerHTML=`<p class="lead">Search any item to see what you paid. Matches your item names and Northside's descriptions.</p>
+  <div class="tools"><input class="search" id="pq" type="search" placeholder="Search item or price, like PROPEX RING" value="${esc(S.pq||'')}" autocapitalize="characters"></div>
+  <div id="pl"></div>`;
+  const idx=priceIndex();
+  const draw=()=>{ S.pq=$('#pq').value; const w=norm(S.pq).split(' ').filter(Boolean);
+    const hits=idx.filter(e=>w.every(x=>e.find.includes(x))).sort((a,b)=>a.item.localeCompare(b.item));
+    if(!w.length){ $('#pl').innerHTML=`<div class="empty">Type part of a name. ${idx.length} items have prices on file.</div>`; return; }
+    $('#pl').innerHTML=hits.length?`<div class="scroll"><table><tr><th>Item</th><th class="n">Last price</th><th>Last bought</th><th class="n">Avg cost</th><th class="n">Low / high</th></tr>
+    ${hits.slice(0,80).map(e=>`<tr data-p="${esc(e.item)}" style="cursor:pointer"><td><b>${esc(e.item)}</b>${Object.keys(e.names).some(n=>norm(n)!==norm(e.item))?`<div style="color:var(--soft);font-size:12px">Northside: ${esc(Object.keys(e.names).join('; '))}</div>`:''}</td>
+      <td class="n"><b>${unitPrice(e.last.price)}</b> / ${esc(e.uom)}</td><td>${niceDate(e.last.date)}, ticket ${esc(e.last.ticket)}</td><td class="n">${unitPrice(e.avg)}</td>
+      <td class="n">${e.min===e.max?'same':unitPrice(e.min)+' / '+unitPrice(e.max)}</td></tr>`).join('')}</table></div>
+    ${hits.length>80?`<p class="lead" style="margin-top:8px">Showing 80 of ${hits.length}. Type more to narrow it down.</p>`:''}`
+    :`<div class="empty">No item matches “${esc(S.pq)}”.</div>`;
+    $('#pl').querySelectorAll('[data-p]').forEach(r=>r.addEventListener('click',()=>priceSheet(idx.find(e=>e.item===r.dataset.p))));
+  };
+  draw(); $('#pq').addEventListener('input',draw); $('#pq').focus();
+}
+function priceSheet(e){
+  openSheet(`<div class="sheet-head"><h2>${esc(e.item)}</h2><button class="btn ghost small" data-close>Close</button></div>
+  <div class="stat"><div><b>${unitPrice(e.last.price)}</b>Last price / ${esc(e.uom)}</div><div><b>${unitPrice(e.avg)}</b>Avg cost</div><div><b>${e.buys.length}</b>Times bought</div></div>
+  <div class="scroll"><table><tr><th>Date</th><th>Ticket</th><th class="n">Qty</th><th class="n">Price</th><th class="n">Ext.</th><th>PDF</th></tr>
+  ${e.buys.map(b=>`<tr><td>${niceDate(b.date)}</td><td>${esc(b.ticket)}</td><td class="n">${fmtQty(b.qty)} ${esc(b.uom)}</td><td class="n"><b>${unitPrice(b.price)}</b></td><td class="n">${money(b.ext)}</td>
+  <td>${b.pdf?`<a href="${esc(b.pdf)}" target="_blank" rel="noopener">View</a>`:''}</td></tr>`).join('')}</table></div>`);
+}
+
+/* ---------- Auto tickets from email (owner) ---------- */
+const autoKind = k => k==='CREDIT'?'Credit memo':k==='INVOICE'?'Invoice':'Email';
+const autoStatus = s => ({ADDED:'<span class="pill done">Added</span>',SKIPPED:'<span class="pill open">Already in app</span>',REVIEW:'<span class="pill new">Needs review</span>',FIXED:'<span class="pill done">Fixed by hand</span>',DISMISSED:'<span class="pill open">Dismissed</span>'})[s]||esc(s);
+function autoView(el){
+  if(S.auto===null){ el.innerHTML=`<div class="card"><b>Automatic tickets aren't turned on yet.</b><p class="lead" style="margin:6px 0 0">The Google script still needs the update. Once it's in, tickets from Northside emails show up here on their own.</p></div>`; return; }
+  const rev=autoReview(), done=(S.auto||[]).filter(a=>a.status!=='REVIEW').slice().reverse().slice(0,40);
+  el.innerHTML=`<p class="lead">The app checks Northside emails every hour. Invoices that add up go straight into inventory, and credit memos are taken out as returned to Northside. Anything that doesn't match waits here for you.</p>
+  <button class="btn ghost small" id="aRun">Check email now</button>
+  <h2 style="margin-top:20px">Needs review</h2>
+  ${rev.length?rev.map((a,i)=>`<div class="card" style="margin-top:12px" data-ai="${i}">
+    <h2 style="margin-top:0">${autoKind(a.kind)} ${esc(a.ticket)} <span style="font-weight:500;color:var(--soft);font-size:17px">${niceDate(a.date)}${a.total!==''?', '+money(a.total):''}</span></h2>
+    <p class="bad">${esc(a.reason)}</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">${a.link?`<a class="btn ghost small" href="${esc(a.link)}" target="_blank" rel="noopener">Open the PDF</a>`:''}
+      ${a.data?`<button class="btn small" data-fix="${i}">${a.kind==='CREDIT'?'Pick items and take out':'Review and add'}</button>`:''}
+      <button class="btn ghost small" data-dis="${i}">Dismiss</button></div>
+    <div data-box="${i}"></div></div>`).join(''):'<div class="empty">Nothing to review.</div>'}
+  <h2 style="margin-top:26px">Recent activity</h2>
+  ${done.length?`<div class="scroll"><table><tr><th>Date</th><th>What</th><th>Ticket</th><th class="n">Total</th><th>Result</th><th>Note</th></tr>
+  ${done.map(a=>`<tr><td>${niceDate(a.date)}</td><td>${autoKind(a.kind)}</td><td>${esc(a.ticket)}</td><td class="n">${a.total!==''?money(a.total):''}</td><td>${autoStatus(a.status)}</td><td>${esc(a.reason)}</td></tr>`).join('')}</table></div>`:'<div class="empty">No emails read yet.</div>'}`;
+  const refresh=async()=>{ await load(); await loadOwner(); ownerView($('#app')); };
+  $('#aRun').addEventListener('click',async()=>{ const b=$('#aRun'); b.disabled=true; b.textContent='Checking…';
+    try{ await api('autoRun',{pin:S.pin}); await refresh(); toast('Email checked'); }catch(err){ toast(err.message,1); b.disabled=false; b.textContent='Check email now'; } });
+  el.querySelectorAll('[data-dis]').forEach(b=>b.addEventListener('click',async()=>{ const a=rev[+b.dataset.dis];
+    if(!confirm(`Dismiss ${autoKind(a.kind).toLowerCase()} ${a.ticket||''}? Nothing will be added or taken out.`)) return;
+    try{ await api('autoResolve',{pin:S.pin,key:a.key,status:'DISMISSED'}); await loadAuto(); ownerView($('#app')); toast('Dismissed'); }catch(err){ toast(err.message,1); } }));
+  el.querySelectorAll('[data-fix]').forEach(b=>b.addEventListener('click',()=>{ const i=+b.dataset.fix, a=rev[i], box=el.querySelector(`[data-box="${i}"]`);
+    if(a.kind==='CREDIT') return autoCreditForm(a,box,refresh);
+    reviewTickets([a.data],box,async()=>{ try{ await api('autoResolve',{pin:S.pin,key:a.key,status:'FIXED'}); }catch(e){} await loadAuto(); setTimeout(()=>ownerView($('#app')),900); });
+  }));
+}
+function autoCreditForm(a,box,refresh){
+  const d=a.data, ls=d.lines||[];
+  box.innerHTML=`<p class="lead" style="margin-top:12px">Pick the inventory item for each returned line. Saving takes them out of stock as returned to Northside.</p>
+  <div class="scroll"><table><tr><th class="n">Qty</th><th>On the credit memo</th><th>Take out of inventory as</th></tr>
+  ${ls.map((l,li)=>`<tr><td class="n"><input class="input" style="width:80px" type="number" min="0" step="any" id="cq_${li}" value="${esc(l.qty)}"></td><td>${esc(l.desc)}<div style="color:var(--soft);font-size:12px">${esc(l.code||'')}</div></td>
+  <td style="min-width:240px"><div class="field" style="margin:0" id="cm_${li}"></div></td></tr>`).join('')}</table></div>
+  <button class="btn" style="margin-top:12px" id="cSave">Take out of inventory</button>`;
+  const picks=ls.map((l,li)=>combo($('#cm_'+li,box),{id:'ci_'+li,placeholder:'Pick the item',value:l.item||'',options:itemOpts}));
+  $('#cSave',box).addEventListener('click',async()=>{
+    const lines=ls.map((l,li)=>({item:picks[li].value||$('#ci_'+li,box).value.trim(),qty:$('#cq_'+li,box).value}));
+    if(lines.some(l=>!l.item)) return toast('Pick an item for every line',1);
+    const b=$('#cSave',box); b.disabled=true; b.textContent='Saving…';
+    try{ await api('autoCredit',{pin:S.pin,key:a.key,ticket:d.ticket,lines}); toast(`Credit memo ${d.ticket.no} taken out`); await refresh(); }
+    catch(err){ toast(err.message,1); b.disabled=false; b.textContent='Take out of inventory'; }
+  });
 }
 
 function countView(el){
