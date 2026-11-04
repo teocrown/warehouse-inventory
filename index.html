@@ -599,10 +599,10 @@ function ownerView(app){
     $('#pin').focus(); return;
   }
   const nr=autoReview().length;
-  const tabs={tickets:'Tickets',prices:'Prices',auto:nr?`Auto tickets (${nr})`:'Auto tickets',add:'Add ticket',count:'Count',reports:'Reports'};
+  const tabs={tickets:'Tickets',history:'History',prices:'Prices',auto:nr?`Auto tickets (${nr})`:'Auto tickets',add:'Add ticket',count:'Count',reports:'Reports'};
   app.innerHTML=`<h1>Owner</h1><div class="seg">${Object.entries(tabs).map(([k,v])=>`<button type="button" class="${S.ownerTab===k?'on':''}" data-o="${k}">${v}</button>`).join('')}</div><div id="ob"></div>`;
   app.querySelectorAll('[data-o]').forEach(b=>b.addEventListener('click',()=>{S.ownerTab=b.dataset.o;ownerView(app);}));
-  ({tickets:ticketsView,prices:pricesView,auto:autoView,add:addTicketView,count:countView,reports:reportsView})[S.ownerTab]($('#ob'));
+  ({tickets:ticketsView,history:historyView,prices:pricesView,auto:autoView,add:addTicketView,count:countView,reports:reportsView})[S.ownerTab]($('#ob'));
 }
 
 function ticketCheck(t){
@@ -644,6 +644,37 @@ function ticketsView(el){
     <tr><td colspan="3" class="n">Total due ${esc(dueLabel(k))}</td><td class="n"><b>${money(net(k))}</b></td><td></td></tr></table></div>`; }).join('')}`;
   el.querySelectorAll('[data-t]').forEach(r=>r.addEventListener('click',e=>{ if(e.target.closest('[data-pdf]')) return; ticketSheet(r.dataset.t); }));
   const ga=$('#goAuto'); if(ga) ga.addEventListener('click',()=>{S.ownerTab='auto';ownerView($('#app'));});
+}
+/* ---------- Ticket history since Dec 26 2025 (owner, view only) ---------- */
+async function historyView(el){
+  if(!S.hist){ el.innerHTML='<div class="empty">Loading ticket history…</div>';
+    try{ S.hist=await api('historyList',{pin:S.pin}); }
+    catch(e){ el.innerHTML=`<div class="card"><b>Ticket history isn't turned on yet.</b><p class="lead" style="margin:6px 0 0">The Google script still needs the History update. Once it's in, every Northside ticket since December 26 shows up here.</p></div>`; return; } }
+  const links={}; (S.owner.tickets||[]).forEach(t=>{ if(t.PdfLink && String(t.PdfLink).indexOf('drive.google.com')>=0) links[t.Ticket]=t.PdfLink; });
+  const all=S.hist.rows.filter(r=>r.kind!=='UNREAD').map(r=>({...r,total:Number(r.total)||0,link:links[r.ticket]||r.link}));
+  const unread=S.hist.rows.filter(r=>r.kind==='UNREAD');
+  const q=(S.histQ||'').trim().toLowerCase();
+  const words=q.split(/[,\s]+/).filter(Boolean);
+  const hit=r=>!words.length||words.some(w=>(r.po+' '+r.ticket+' '+r.ship).toLowerCase().indexOf(w)>=0);
+  const list=all.filter(hit);
+  const groups={}; list.forEach(r=>{ const k=dueDate(r.date)||'none'; (groups[k]=groups[k]||[]).push(r); });
+  const keys=Object.keys(groups).sort((a,b)=>a.localeCompare(b));
+  const tot=a=>a.reduce((s,r)=>s+r.total,0);
+  el.innerHTML=`<p class="lead">Every Northside ticket since December 26, 2025, grouped by statement due date. View only, nothing here changes stock.</p>
+  ${S.hist.running?'<div class="card warnbox" style="margin-bottom:12px"><b>Still reading old emails.</b> More tickets will show up over the next few minutes. Tap Refresh to see them.</div>':''}
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input id="hq" type="search" placeholder="Search P.O. names, for example: german herman" value="${esc(S.histQ||'')}" style="flex:1;min-width:220px">
+  <button class="btn ghost small" id="hRef">Refresh</button></div>
+  <p style="color:var(--soft);margin:8px 0 0">${words.length?`Showing tickets with <b>${esc(words.join(' or '))}</b> on the P.O.: `:''}${list.length} tickets, ${money(tot(list))}</p>
+  ${keys.length?keys.map(k=>{ const g=groups[k].sort((a,b)=>a.date.localeCompare(b.date)||a.ticket.localeCompare(b.ticket));
+    return `<h2 style="margin-top:24px;padding-top:12px;border-top:3px solid var(--copper)">${k==='none'?'No date':'Due '+esc(dueLabel(k))}</h2>
+    <div class="scroll"><table><tr><th>Ticket</th><th>Date</th><th>P.O.</th><th class="n">Total</th><th>PDF</th></tr>
+    ${g.map(r=>`<tr><td><b>${esc(r.ticket)}</b>${r.kind==='CREDIT'?' <span class="pill open">Credit</span>':''}</td><td>${niceDate(r.date)}</td><td>${esc(r.po)}</td><td class="n">${money(r.total)}</td>
+    <td>${r.link?`<a href="${esc(r.link)}" target="_blank" rel="noopener">View</a>`:''}</td></tr>`).join('')}
+    <tr><td colspan="3" class="n">${words.length?'Total of these':'Statement total'}</td><td class="n"><b>${money(tot(g))}</b></td><td></td></tr></table></div>`; }).join(''):'<div class="empty" style="margin-top:14px">No tickets match.</div>'}
+  ${unread.length?`<h2 style="margin-top:26px">Emails the app could not read (${unread.length})</h2><div class="scroll"><table><tr><th>Problem</th><th>Email</th></tr>${unread.map(r=>`<tr><td>${esc(r.note)}</td><td><a href="${esc(r.link)}" target="_blank" rel="noopener">Open</a></td></tr>`).join('')}</table></div>`:''}`;
+  const inp=$('#hq'); let tm;
+  inp.addEventListener('input',()=>{ clearTimeout(tm); tm=setTimeout(()=>{ S.histQ=inp.value; historyView(el).then(()=>{ const i=$('#hq'); i.focus(); i.setSelectionRange(i.value.length,i.value.length); }); },300); });
+  $('#hRef').addEventListener('click',()=>{ S.hist=null; historyView(el); });
 }
 function ticketSheet(no){
   const t=S.owner.tickets.find(x=>x.Ticket===no); const c=ticketCheck(t);
@@ -869,7 +900,7 @@ function openSheet(html){ $('#sheet').innerHTML=html; $('#sheetBg').classList.ad
 function closeSheet(){ $('#sheetBg').classList.remove('show'); }
 $('#sheetBg').addEventListener('click',e=>{ if(e.target.id==='sheetBg') closeSheet(); });
 document.querySelectorAll('nav.tabs button').forEach(b=>b.addEventListener('click',()=>{S.tab=b.dataset.tab;render();}));
-$('#lockBtn').addEventListener('click',()=>{S.pin='';S.owner=null;if(S.tab==='owner')S.ownerTab='tickets';render();toast('Owner locked');});
+$('#lockBtn').addEventListener('click',()=>{S.pin='';S.owner=null;S.hist=null;if(S.tab==='owner')S.ownerTab='tickets';render();toast('Owner locked');});
 $('#whoBtn').addEventListener('click',()=>{
   openSheet(`<div class="sheet-head"><h2>Who's using this iPad?</h2><button class="btn ghost small" data-close>Close</button></div>
   <p style="color:var(--soft)">Your name goes on everything you log from this device.</p>
