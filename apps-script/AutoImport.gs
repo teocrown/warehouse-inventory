@@ -67,6 +67,9 @@ function autoImportNorthside() {
 function autoHandle_(key, msg, att) {
   const doc = autoParse_(autoText_(att.getBytes()));
   const t = doc.ticket;
+  if (doc.kind === 'STATEMENT') {
+    return autoLog_(key, 'STATEMENT', '', '', 'SKIPPED', 'Monthly statement, not a ticket', '', null, msg.getId());
+  }
   if (doc.kind === 'INVOICE') {
     if (rows_('Tickets').some(function (r) { return norm_(r.Ticket) === norm_(t.no); })) {
       return autoLog_(key, 'INVOICE', t.no, t.date, 'SKIPPED', 'Already in the app', t.total, null, msg.getId());
@@ -123,6 +126,10 @@ function autoPick_(lines, re) {
 
 function autoParse_(L) {
   const all = L.join('\n');
+  // The monthly statement lists "CM -CREDIT MEMO" in its code legend, so check for it first.
+  if (/S\s*T\s*A\s*T\s*E\s*M\s*E\s*N\s*T/.test(all) && !/PDF INVOICE/.test(all) && !/CM\s*#\s*\d/.test(all)) {
+    return { kind: 'STATEMENT', ticket: {}, lines: [] };
+  }
   const credit = /CREDIT MEMO/.test(all);
   const invoice = /PDF INVOICE/.test(all);
   const t = {

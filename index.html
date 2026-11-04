@@ -201,7 +201,7 @@ const $ = (s,el=document)=>el.querySelector(s);
 const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const norm = s => String(s||'').trim().replace(/\s+/g,' ').toUpperCase();
 const fmtQty = n => { n=Number(n)||0; return Number.isInteger(n)? n.toLocaleString() : n.toLocaleString(undefined,{maximumFractionDigits:3}); };
-const money = n => '$'+(Number(n)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+const money = n => { const v=Number(n)||0; return (v<0?'-$':'$')+Math.abs(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); };
 const today = () => { const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); };
 const niceDate = s => { if(!s) return ''; const [y,m,d]=String(s).split('-'); return m&&d? `${m}/${d}/${y.slice(2)}` : s; };
 
@@ -618,22 +618,30 @@ const dueLabel = s => { const p=String(s||'').split('-'); return p.length<3?'No 
 function ticketsView(el){
   const ts=S.owner.tickets.slice().sort((a,b)=>String(b.Date).localeCompare(a.Date)||String(b.Ticket).localeCompare(a.Ticket));
   const total=ts.reduce((a,t)=>a+Number(t.Total),0);
-  const groups={}; ts.forEach(t=>{ const k=dueDate(t.Date); (groups[k]=groups[k]||[]).push(t); });
+  // Credit memos only live in the email log (they take items out of inventory), so pull them in here so each statement nets them like Northside does.
+  const cseen={}, credits=(S.auto||[]).filter(a=>a.kind==='CREDIT'&&(a.status==='ADDED'||a.status==='FIXED')&&a.ticket&&a.date&&a.total!==''&&!cseen[a.ticket]&&(cseen[a.ticket]=1))
+    .map(a=>({Ticket:String(a.ticket),Date:String(a.date),Total:-Math.abs(Number(a.total))}));
+  const groups={}, cgroups={};
+  ts.forEach(t=>{ const k=dueDate(t.Date); (groups[k]=groups[k]||[]).push(t); });
+  credits.forEach(c=>{ const k=dueDate(c.Date); if(!k) return; (cgroups[k]=cgroups[k]||[]).push(c); groups[k]=groups[k]||[]; });
   const keys=Object.keys(groups).sort((a,b)=>b.localeCompare(a));
-  const sum=(arr,f)=>arr.reduce((a,t)=>a+Number(t[f]),0);
+  const sum=(arr,f)=>(arr||[]).reduce((a,t)=>a+Number(t[f]),0);
+  const net=k=>sum(groups[k],'Total')+sum(cgroups[k],'Total');
+  const totalCredits=sum(credits,'Total');
   const nr=autoReview().length;
   el.innerHTML=`${nr?`<div class="card warnbox" style="margin-bottom:14px"><b>${nr} Northside ${nr===1?'ticket needs':'tickets need'} your review.</b> The app read ${nr===1?'it':'them'} from email but something didn't match. <button class="btn small" id="goAuto" style="margin-left:6px">Review</button></div>`:''}
-  <div class="stat"><div><b>${ts.length}</b>Tickets</div><div><b>${money(total)}</b>Total billed</div></div>
+  <div class="stat"><div><b>${ts.length}</b>Tickets</div><div><b>${money(total)}</b>Total billed</div><div><b>${money(totalCredits)}</b>Credit memos</div><div><b>${money(total+totalCredits)}</b>Net</div></div>
   <h2 style="margin-top:6px">By statement</h2>
-  <div class="scroll"><table><tr><th>Statement due</th><th class="n">Tickets</th><th class="n">Subtotal</th><th class="n">Tax</th><th class="n">Total</th></tr>
-  ${keys.map(k=>`<tr><td><b>${esc(dueLabel(k))}</b></td><td class="n">${groups[k].length}</td><td class="n">${money(sum(groups[k],'Subtotal'))}</td><td class="n">${money(sum(groups[k],'Tax'))}</td><td class="n"><b>${money(sum(groups[k],'Total'))}</b></td></tr>`).join('')}</table></div>
-  ${keys.map(k=>{ const g=groups[k], ds=g.map(t=>String(t.Date)).sort();
+  <div class="scroll"><table><tr><th>Statement due</th><th class="n">Tickets</th><th class="n">Subtotal</th><th class="n">Tax</th><th class="n">Credits</th><th class="n">Total</th></tr>
+  ${keys.map(k=>`<tr><td><b>${esc(dueLabel(k))}</b></td><td class="n">${groups[k].length}</td><td class="n">${money(sum(groups[k],'Subtotal'))}</td><td class="n">${money(sum(groups[k],'Tax'))}</td><td class="n">${cgroups[k]?money(sum(cgroups[k],'Total')):''}</td><td class="n"><b>${money(net(k))}</b></td></tr>`).join('')}</table></div>
+  ${keys.map(k=>{ const g=groups[k], cg=cgroups[k]||[], ds=g.concat(cg).map(t=>String(t.Date)).sort();
     return `<h2 style="margin-top:28px;padding-top:14px;border-top:3px solid var(--copper)">Due ${esc(dueLabel(k))}</h2>
-    <div class="stat"><div><b>${g.length}</b>Tickets</div><div><b>${money(sum(g,'Total'))}</b>Statement total</div><div><b>${niceDate(ds[0])} to ${niceDate(ds[ds.length-1])}</b>Ticket dates</div></div>
+    <div class="stat"><div><b>${g.length}</b>Tickets</div>${cg.length?`<div><b>${cg.length}</b>Credit memos</div>`:''}<div><b>${money(net(k))}</b>Statement total</div><div><b>${niceDate(ds[0])} to ${niceDate(ds[ds.length-1])}</b>Ticket dates</div></div>
     <div class="scroll"><table><tr><th>Ticket</th><th>Date</th><th>P.O.</th><th class="n">Total</th><th>PDF</th></tr>
     ${g.map(t=>`<tr data-t="${esc(t.Ticket)}" style="cursor:pointer"><td><b>${esc(t.Ticket)}</b></td><td>${niceDate(t.Date)}</td><td>${esc(t.PO)}</td>
     <td class="n">${money(t.Total)}</td><td>${t.PdfLink?`<a href="${esc(t.PdfLink)}" target="_blank" rel="noopener" data-pdf>View</a>`:''}</td></tr>`).join('')}
-    <tr><td colspan="3" class="n">Total due ${esc(dueLabel(k))}</td><td class="n"><b>${money(sum(g,'Total'))}</b></td><td></td></tr></table></div>`; }).join('')}`;
+    ${cg.map(c=>`<tr><td><b>${esc(c.Ticket)}</b></td><td>${niceDate(c.Date)}</td><td>Credit memo</td><td class="n">${money(c.Total)}</td><td></td></tr>`).join('')}
+    <tr><td colspan="3" class="n">Total due ${esc(dueLabel(k))}</td><td class="n"><b>${money(net(k))}</b></td><td></td></tr></table></div>`; }).join('')}`;
   el.querySelectorAll('[data-t]').forEach(r=>r.addEventListener('click',e=>{ if(e.target.closest('[data-pdf]')) return; ticketSheet(r.dataset.t); }));
   const ga=$('#goAuto'); if(ga) ga.addEventListener('click',()=>{S.ownerTab='auto';ownerView($('#app'));});
 }
@@ -734,7 +742,7 @@ function priceSheet(e){
 }
 
 /* ---------- Auto tickets from email (owner) ---------- */
-const autoKind = k => k==='CREDIT'?'Credit memo':k==='INVOICE'?'Invoice':'Email';
+const autoKind = k => k==='CREDIT'?'Credit memo':k==='INVOICE'?'Invoice':k==='STATEMENT'?'Statement':'Email';
 const autoStatus = s => ({ADDED:'<span class="pill done">Added</span>',SKIPPED:'<span class="pill open">Already in app</span>',REVIEW:'<span class="pill new">Needs review</span>',FIXED:'<span class="pill done">Fixed by hand</span>',DISMISSED:'<span class="pill open">Dismissed</span>'})[s]||esc(s);
 function autoView(el){
   if(S.auto===null){ el.innerHTML=`<div class="card"><b>Automatic tickets aren't turned on yet.</b><p class="lead" style="margin:6px 0 0">The Google script still needs the update. Once it's in, tickets from Northside emails show up here on their own.</p></div>`; return; }
